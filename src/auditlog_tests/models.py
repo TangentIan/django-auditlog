@@ -215,6 +215,44 @@ class NoDeleteHistoryModel(models.Model):
     history = AuditlogHistoryField(delete_related=False)
 
 
+@auditlog.register()
+class AutoNowFieldsModel(models.Model):
+    """
+    Several auto_now fields plus an auto_now_add field that must stay unchanged
+    on update. Used to require an audit entry for every value Django rewrites.
+    """
+
+    label = models.CharField(max_length=100, blank=True)
+    touched_on = models.DateTimeField(auto_now=True)
+    also_touched_on = models.DateTimeField(auto_now=True)
+    created_on = models.DateTimeField(auto_now_add=True)
+    stamped_on = models.DateField(auto_now=True)
+    clocked_at = models.TimeField(auto_now=True)
+
+    history = AuditlogHistoryField()
+
+
+@auditlog.register(include_fields=['label', 'touched_on'])
+class AutoNowIncludeModel(models.Model):
+    """include_fields lists the auto_now field, so a touch save must log it."""
+
+    label = models.CharField(max_length=100, blank=True)
+    touched_on = models.DateTimeField(auto_now=True)
+    ignored = models.CharField(max_length=100, blank=True)
+
+    history = AuditlogHistoryField()
+
+
+@auditlog.register(exclude_fields=['touched_on'])
+class AutoNowExcludeModel(models.Model):
+    """exclude_fields drops the auto_now field even when Django rewrites it."""
+
+    label = models.CharField(max_length=100, blank=True)
+    touched_on = models.DateTimeField(auto_now=True)
+
+    history = AuditlogHistoryField()
+
+
 auditlog.register(AltPrimaryKeyModel)
 auditlog.register(UUIDPrimaryKeyModel)
 auditlog.register(ProxyModel)
