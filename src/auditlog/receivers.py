@@ -22,9 +22,12 @@ def log_create(sender, instance, created, **kwargs):
         )
 
 
-def log_update(sender, instance, **kwargs):
+def log_update(sender, instance, update_fields=None, **kwargs):
     """
     Signal receiver that creates a log entry when a model instance is changed and saved to the database.
+
+    When the save is limited by ``update_fields``, only changes to those fields are logged, as other fields are not
+    written to the database.
 
     Direct use is discouraged, connect your model through :py:func:`auditlog.registry.register` instead.
     """
@@ -37,6 +40,15 @@ def log_update(sender, instance, **kwargs):
             new = instance
 
             changes = model_instance_diff(old, new)
+
+            if changes and update_fields is not None:
+                saved_fields = set(
+                    field.name for field in sender._meta.concrete_fields
+                    if field.name in update_fields or field.attname in update_fields
+                )
+                changes = dict(
+                    (name, change) for name, change in changes.items() if name in saved_fields
+                )
 
             # Log an entry only if there are changes
             if changes:
