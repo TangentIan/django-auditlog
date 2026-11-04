@@ -94,6 +94,15 @@ project's configuration file::
 
 It is recommended to keep all middleware that alters the request loaded before Auditlog's middleware.
 
+The remote address is taken from ``REMOTE_ADDR``. The ``X-Forwarded-For`` header is ignored unless the request comes
+from a proxy listed in the ``AUDITLOG_TRUSTED_PROXIES`` setting::
+
+    AUDITLOG_TRUSTED_PROXIES = ['10.0.0.1', '10.0.0.2']
+
+For requests from a trusted proxy, the rightmost address in ``X-Forwarded-For`` that is not itself a trusted proxy is
+logged. If that entry is not a valid IP address, or there is none, the proxy's own address is logged. List every proxy
+that appends to the header, or the address of an inner proxy will be logged instead of the client's.
+
 .. warning::
 
     Please keep in mind that every object change in a request that gets logged automatically will have the current request's
