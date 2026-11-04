@@ -54,7 +54,10 @@ class SimpleModelTest(TestCase):
 
         history = obj.history.get(action=LogEntry.Action.UPDATE)
 
-        self.assertJSONEqual(history.changes, '{"boolean": ["False", "True"]}', msg="The change is correctly logged")
+        changes = history.changes_dict
+        self.assertEqual(set(changes), {'boolean', 'datetime'}, msg="The changed and auto_now fields are logged")
+        self.assertEqual(changes['boolean'], ['False', 'True'], msg="The change is correctly logged")
+        self.assertNotEqual(changes['datetime'][0], changes['datetime'][1], msg="The auto_now change is logged")
 
     def test_delete(self):
         """Deletion is logged correctly."""
