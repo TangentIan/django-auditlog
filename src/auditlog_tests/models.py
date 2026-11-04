@@ -215,6 +215,56 @@ class NoDeleteHistoryModel(models.Model):
     history = AuditlogHistoryField(delete_related=False)
 
 
+class GroupedChoicesModel(models.Model):
+    """
+    Grouped choices, as Django documents them: a group label plus nested
+    (value, label) pairs. Used to test human-readable audit history.
+    """
+    MEDIA_CHOICES = (
+        ('Audio', (
+            ('vinyl', 'Vinyl'),
+            ('cd', 'CD'),
+        )),
+        ('Video', (
+            ('vhs', 'VHS Tape'),
+            ('dvd', 'DVD'),
+        )),
+    )
+    RANK_CHOICES = (
+        ('Audio', (
+            (1, 'Vinyl'),
+            (2, 'CD'),
+        )),
+        ('Video', (
+            (3, 'VHS Tape'),
+            (4, 'DVD'),
+        )),
+    )
+
+    media = models.CharField(max_length=32, choices=MEDIA_CHOICES)
+    rank = models.IntegerField(choices=RANK_CHOICES)
+    # Assigned a list, matching ChoicesFieldModel.multiplechoice.
+    playlist = models.CharField(max_length=64, choices=MEDIA_CHOICES)
+    formats = MultiSelectField(max_length=64, choices=MEDIA_CHOICES, max_choices=4)
+
+    history = AuditlogHistoryField()
+
+
+class PostgresGroupedChoiceArrayModel(models.Model):
+    """
+    ArrayField whose base field uses grouped choices. The model name must
+    start with "postgres" so the test router keeps it on the postgres alias.
+    """
+    MEDIA_CHOICES = GroupedChoicesModel.MEDIA_CHOICES
+
+    arrayfield = ArrayField(
+        models.CharField(max_length=32, choices=MEDIA_CHOICES),
+        size=4,
+    )
+
+    history = AuditlogHistoryField()
+
+
 auditlog.register(AltPrimaryKeyModel)
 auditlog.register(UUIDPrimaryKeyModel)
 auditlog.register(ProxyModel)
@@ -229,3 +279,5 @@ auditlog.register(ChoicesFieldModel)
 auditlog.register(CharfieldTextfieldModel)
 auditlog.register(PostgresArrayFieldModel)
 auditlog.register(NoDeleteHistoryModel)
+auditlog.register(GroupedChoicesModel)
+auditlog.register(PostgresGroupedChoiceArrayModel)

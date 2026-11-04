@@ -16,7 +16,8 @@ from auditlog.registry import auditlog
 from auditlog_tests.models import SimpleModel, AltPrimaryKeyModel, UUIDPrimaryKeyModel, \
     ProxyModel, SimpleIncludeModel, SimpleExcludeModel, SimpleMappingModel, RelatedModel, \
     ManyRelatedModel, AdditionalDataIncludedModel, DateTimeFieldModel, ChoicesFieldModel, \
-    CharfieldTextfieldModel, PostgresArrayFieldModel, NoDeleteHistoryModel
+    CharfieldTextfieldModel, PostgresArrayFieldModel, NoDeleteHistoryModel, \
+    GroupedChoicesModel, PostgresGroupedChoiceArrayModel
 from auditlog import compat
 
 
@@ -596,6 +597,149 @@ class PostgresArrayFieldModelTest(TestCase):
         self.obj.save()
         self.assertTrue(self.obj.history.latest().changes_display_dict["arrayfield"][1] == "Green",
                         msg="The human readable text 'Green' is displayed.")
+
+
+class GroupedChoicesDisplayTest(TestCase):
+    """
+    Human-readable history for grouped choices.
+
+    Django stores grouped choices as (group label, nested pairs). The display
+    map must flatten those pairs the way Field.flatchoices does, and a stored
+    value that is not in the map must be shown unchanged. These tests fail
+    while the lookup is built with dict(field.choices) and missing keys are
+    replaced with the string None.
+    """
+
+    def setUp(self):
+        self.obj = GroupedChoicesModel.objects.create(
+            media='vinyl',
+            rank=1,
+            playlist=['vinyl', 'cd'],
+            formats=['vinyl', 'cd'],
+        )
+
+    def test_grouped_char_choice_create_shows_label(self):
+        created = self.obj.history.get(action=LogEntry.Action.CREATE)
+        self.assertEqual(created.changes_dict['media'], ['None', 'vinyl'])
+        self.assertEqual(created.changes_display_dict['media'], ['None', 'Vinyl'])
+
+    def test_grouped_char_choice_update_shows_old_and_new_labels(self):
+        self.obj.media = 'dvd'
+        self.obj.save()
+
+        updated = self.obj.history.latest()
+        self.assertEqual(updated.action, LogEntry.Action.UPDATE)
+        self.assertEqual(updated.changes_dict['media'], ['vinyl', 'dvd'])
+        self.assertEqual(updated.changes_display_dict['media'], ['Vinyl', 'DVD'])
+
+    def test_grouped_char_choice_delete_shows_the_stored_label(self):
+        self.obj.media = 'dvd'
+        self.obj.save()
+        object_id = self.obj.pk
+        self.obj.delete()
+
+        deleted = LogEntry.objects.get(
+            object_id=object_id,
+            action=LogEntry.Action.DELETE,
+        )
+        self.assertEqual(deleted.changes_dict['media'], ['dvd', 'None'])
+        self.assertEqual(deleted.changes_display_dict['media'], ['DVD', 'None'])
+
+    def test_grouped_integer_choice_update_shows_labels(self):
+        self.obj.rank = 4
+        self.obj.save()
+
+        updated = self.obj.history.latest()
+        self.assertEqual(updated.changes_dict['rank'], ['1', '4'])
+        self.assertEqual(updated.changes_display_dict['rank'], ['Vinyl', 'DVD'])
+
+    def test_grouped_choice_list_and_multiselect_show_labels(self):
+        created = self.obj.history.get(action=LogEntry.Action.CREATE)
+        self.assertEqual(created.changes_display_dict['playlist'], ['None', 'Vinyl, CD'])
+        self.assertEqual(created.changes_display_dict['formats'], ['None', 'Vinyl, CD'])
+
+        self.obj.playlist = ['dvd']
+        self.obj.formats = ['vhs', 'dvd']
+        self.obj.save()
+
+        updated = self.obj.history.latest()
+        self.assertEqual(updated.changes_dict['playlist'], ["['vinyl', 'cd']", "['dvd']"])
+        self.assertEqual(updated.changes_display_dict['playlist'], ['Vinyl, CD', 'DVD'])
+        # MultiSelectField reloads the previous value as its list type, whose
+        # string form is already the choice labels. The new value is still the
+        # list assigned in memory.
+        self.assertEqual(
+            updated.changes_dict['formats'],
+            ['Vinyl, CD', "['vhs', 'dvd']"],
+        )
+        self.assertEqual(
+            updated.changes_display_dict['formats'],
+            ['Vinyl, CD', 'VHS Tape, DVD'],
+        )
+
+    def test_missing_choice_key_keeps_the_stored_value(self):
+        self.obj.media = 'reel-to-reel'
+        self.obj.playlist = ['dvd', 'laserdisc']
+        self.obj.save()
+
+        updated = self.obj.history.latest()
+        self.assertEqual(updated.changes_dict['media'], ['vinyl', 'reel-to-reel'])
+        self.assertEqual(
+            updated.changes_display_dict['media'],
+            ['Vinyl', 'reel-to-reel'],
+        )
+        self.assertEqual(
+            updated.changes_display_dict['playlist'][1],
+            'DVD, laserdisc',
+        )
+
+
+class PostgresGroupedChoiceArrayTest(TestCase):
+    databases = {'default', 'postgres'}
+
+    def setUp(self):
+        # psycopg2 2.9 calls tzinfo_factory with a timedelta. Django 2.2's
+        # utc_tzinfo_factory compares that offset to the integer 0, so reading
+        # a timestamptz LogEntry raises even when the session time zone is UTC.
+        from datetime import timedelta
+        from django.db.backends.postgresql import base as pgbase
+        from django.utils.timezone import utc
+
+        def utc_tzinfo_factory(offset):
+            if offset not in (0, timedelta(0)):
+                raise AssertionError("database connection isn't set to UTC")
+            return utc
+
+        pgbase.utc_tzinfo_factory = utc_tzinfo_factory
+
+    def test_grouped_arrayfield_update_shows_labels(self):
+        obj = PostgresGroupedChoiceArrayModel.objects.create(
+            arrayfield=['vinyl', 'cd'],
+        )
+        obj.arrayfield = ['dvd', 'laserdisc']
+        obj.save()
+
+        updated = obj.history.latest()
+        self.assertEqual(updated.action, LogEntry.Action.UPDATE)
+        self.assertEqual(updated.changes_dict['arrayfield'][0], "['vinyl', 'cd']")
+        self.assertEqual(updated.changes_dict['arrayfield'][1], "['dvd', 'laserdisc']")
+        self.assertEqual(
+            updated.changes_display_dict['arrayfield'],
+            ['Vinyl, CD', 'DVD, laserdisc'],
+        )
+
+    def test_grouped_arrayfield_delete_shows_the_stored_labels(self):
+        obj = PostgresGroupedChoiceArrayModel.objects.create(arrayfield=['dvd'])
+        object_id = obj.pk
+        database = obj._state.db
+        obj.delete()
+
+        deleted = LogEntry.objects.using(database).get(
+            object_id=object_id,
+            action=LogEntry.Action.DELETE,
+        )
+        self.assertEqual(deleted.changes_dict['arrayfield'], ["['dvd']", 'None'])
+        self.assertEqual(deleted.changes_display_dict['arrayfield'], ['DVD', 'None'])
 
 
 class CompatibilityTest(TestCase):
