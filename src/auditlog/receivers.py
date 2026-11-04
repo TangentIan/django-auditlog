@@ -47,17 +47,56 @@ def log_update(sender, instance, **kwargs):
                 )
 
 
+DELETE_SNAPSHOT_ATTR = '_auditlog_delete_snapshot'
+
+
+def snapshot_delete(sender, instance, using=None, **kwargs):
+    """
+    Signal receiver that captures the persisted state of a model instance right before it is deleted from the database.
+
+    The row is reloaded from the database the deletion runs against, so unsaved changes on ``instance`` are ignored.
+    :py:func:`log_delete` logs this snapshot once the deletion has happened.
+
+    Direct use is discouraged, connect your model through :py:func:`auditlog.registry.register` instead.
+    """
+    instance.__dict__.pop(DELETE_SNAPSHOT_ATTR, None)
+
+    pk = instance.pk
+    if pk is None:
+        return
+
+    manager = sender._base_manager
+    if using:
+        manager = manager.using(using)
+
+    try:
+        persisted = manager.get(pk=pk)
+    except sender.DoesNotExist:
+        return
+
+    changes = model_instance_diff(persisted, None)
+    instance.__dict__[DELETE_SNAPSHOT_ATTR] = (pk, persisted, changes)
+
+
 def log_delete(sender, instance, **kwargs):
     """
     Signal receiver that creates a log entry when a model instance is deleted from the database.
 
+    The logged values are those captured from the database by :py:func:`snapshot_delete`, never the in-memory state of
+    ``instance``. Nothing is logged if no snapshot exists for the primary key that was deleted.
+
     Direct use is discouraged, connect your model through :py:func:`auditlog.registry.register` instead.
     """
-    if instance.pk is not None:
-        changes = model_instance_diff(instance, None)
+    snapshot = instance.__dict__.pop(DELETE_SNAPSHOT_ATTR, None)
+    if snapshot is None or instance.pk is None:
+        return
 
-        log_entry = LogEntry.objects.log_create(
-            instance,
-            action=LogEntry.Action.DELETE,
-            changes=json.dumps(changes),
-        )
+    pk, persisted, changes = snapshot
+    if pk != instance.pk:
+        return
+
+    log_entry = LogEntry.objects.log_create(
+        persisted,
+        action=LogEntry.Action.DELETE,
+        changes=json.dumps(changes),
+    )
