@@ -54,6 +54,29 @@ def get_fields_in_model(instance):
     return instance._meta.fields
 
 
+def normalize_datetime(value):
+    """
+    Converts a datetime to the value Django persists for a ``DateTimeField``, so that values are compared as instants
+    instead of as wall-clock times.
+
+    With ``USE_TZ`` enabled, naive values are interpreted in the default time zone (as ``DateTimeField`` does when
+    saving) and the result is a naive UTC datetime. With ``USE_TZ`` disabled, aware values are converted to the default
+    time zone and made naive.
+
+    :param value: The datetime to normalize.
+    :type value: datetime
+    :return: The normalized, naive datetime.
+    :rtype: datetime
+    """
+    if settings.USE_TZ:
+        if timezone.is_naive(value):
+            value = timezone.make_aware(value, timezone.get_default_timezone())
+        return timezone.make_naive(value, timezone.utc)
+    if timezone.is_aware(value):
+        value = timezone.make_naive(value, timezone.get_default_timezone())
+    return value
+
+
 def get_field_value(obj, field):
     """
     Gets the value of a given model instance field.
@@ -65,12 +88,10 @@ def get_field_value(obj, field):
     :rtype: str
     """
     if isinstance(field, DateTimeField):
-        # DateTimeFields are timezone-aware, so we need to convert the field
-        # to its naive form before we can accuratly compare them for changes.
         try:
             value = field.to_python(getattr(obj, field.name, None))
-            if value is not None and settings.USE_TZ and not timezone.is_naive(value):
-                value = timezone.make_naive(value, timezone=timezone.utc)
+            if value is not None:
+                value = normalize_datetime(value)
         except ObjectDoesNotExist:
             value = field.default if field.default is not NOT_PROVIDED else None
     else:
@@ -134,7 +155,13 @@ def model_instance_diff(old, new):
         old_value = get_field_value(old, field)
         new_value = get_field_value(new, field)
 
-        if old_value != new_value:
+        try:
+            changed = old_value != new_value
+        except TypeError:
+            # Values that cannot be compared are logged as a change rather than aborting the save.
+            changed = True
+
+        if changed:
             diff[field.name] = (smart_text(old_value), smart_text(new_value))
 
     if len(diff) == 0:
