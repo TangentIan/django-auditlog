@@ -10,20 +10,23 @@ class AuditlogModelRegistry(object):
     A registry that keeps track of the models that use Auditlog to track changes.
     """
     def __init__(self, create=True, update=True, delete=True, custom=None):
-        from auditlog.receivers import log_create, log_update, log_delete
+        from auditlog.receivers import log_create, log_update, log_delete, store_old_instance
 
         self._registry = {}
-        self._signals = {}
+        self._signals = []
 
         if create:
-            self._signals[post_save] = log_create
+            self._signals.append((post_save, log_create))
         if update:
-            self._signals[pre_save] = log_update
+            self._signals.append((pre_save, store_old_instance))
+            self._signals.append((post_save, log_update))
         if delete:
-            self._signals[post_delete] = log_delete
+            self._signals.append((post_delete, log_delete))
 
         if custom is not None:
-            self._signals.update(custom)
+            for signal, receiver in iteritems(custom):
+                self._signals = [(s, r) for s, r in self._signals if s is not signal]
+                self._signals.append((signal, receiver))
 
     def register(self, model=None, include_fields=[], exclude_fields=[], mapping_fields={}):
         """
@@ -90,22 +93,21 @@ class AuditlogModelRegistry(object):
         """
         Connect signals for the model.
         """
-        for signal in self._signals:
-            receiver = self._signals[signal]
-            signal.connect(receiver, sender=model, dispatch_uid=self._dispatch_uid(signal, model))
+        for signal, receiver in self._signals:
+            signal.connect(receiver, sender=model, dispatch_uid=self._dispatch_uid(signal, model, receiver))
 
     def _disconnect_signals(self, model):
         """
         Disconnect signals for the model.
         """
-        for signal, receiver in self._signals.items():
-            signal.disconnect(sender=model, dispatch_uid=self._dispatch_uid(signal, model))
+        for signal, receiver in self._signals:
+            signal.disconnect(sender=model, dispatch_uid=self._dispatch_uid(signal, model, receiver))
 
-    def _dispatch_uid(self, signal, model):
+    def _dispatch_uid(self, signal, model, receiver):
         """
         Generate a dispatch_uid.
         """
-        return (self.__class__, model, signal)
+        return (self.__class__, model, signal, receiver)
 
     def get_model_fields(self, model):
         return {
