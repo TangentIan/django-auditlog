@@ -54,6 +54,30 @@ def get_fields_in_model(instance):
     return instance._meta.fields
 
 
+def normalize_datetime(value):
+    """
+    Converts a datetime to the naive wall time of the instant Django stores for it, so that two values compare equal
+    exactly when they are stored as the same instant.
+
+    With ``USE_TZ`` enabled the result is in UTC, and naive values are interpreted in the default time zone like
+    Django does when saving them. Otherwise the result is in the default time zone.
+
+    :param value: The datetime to normalize.
+    :type value: datetime.datetime
+    :return: The normalized naive datetime.
+    :rtype: datetime.datetime
+    """
+    if value is None:
+        return None
+    if settings.USE_TZ:
+        if timezone.is_naive(value):
+            value = timezone.make_aware(value, timezone.get_default_timezone())
+        return timezone.make_naive(value, timezone.utc)
+    if timezone.is_aware(value):
+        return timezone.make_naive(value, timezone.get_default_timezone())
+    return value
+
+
 def get_field_value(obj, field):
     """
     Gets the value of a given model instance field.
@@ -65,14 +89,16 @@ def get_field_value(obj, field):
     :rtype: str
     """
     if isinstance(field, DateTimeField):
-        # DateTimeFields are timezone-aware, so we need to convert the field
-        # to its naive form before we can accuratly compare them for changes.
         try:
-            value = field.to_python(getattr(obj, field.name, None))
-            if value is not None and settings.USE_TZ and not timezone.is_naive(value):
-                value = timezone.make_naive(value, timezone=timezone.utc)
+            raw_value = getattr(obj, field.name, None)
         except ObjectDoesNotExist:
-            value = field.default if field.default is not NOT_PROVIDED else None
+            return field.default if field.default is not NOT_PROVIDED else None
+        try:
+            value = normalize_datetime(field.to_python(raw_value))
+        except Exception:
+            # A value that cannot be resolved to an instant (e.g. an ambiguous local time) must still be seen as a
+            # change, and must not abort the save from the pre_save receiver.
+            value = smart_text(raw_value)
     else:
         try:
             value = smart_text(getattr(obj, field.name, None))
@@ -134,7 +160,12 @@ def model_instance_diff(old, new):
         old_value = get_field_value(old, field)
         new_value = get_field_value(new, field)
 
-        if old_value != new_value:
+        try:
+            changed = old_value != new_value
+        except TypeError:
+            changed = True
+
+        if changed:
             diff[field.name] = (smart_text(old_value), smart_text(new_value))
 
     if len(diff) == 0:
